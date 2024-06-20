@@ -180,13 +180,38 @@ func (s *stateObject) GetState(key common.Hash) common.Hash {
 	return s.GetCommittedState(key)
 }
 
+func (s *stateObject) getOriginStorage(key common.Hash) (common.Hash, bool) {
+	if value, cached := s.originStorage[key]; cached {
+		return value, true
+	}
+	// if L1 cache miss, try to get it from shared pool
+	if s.sharedOriginStorage != nil {
+		val, ok := s.sharedOriginStorage.Load(key)
+		if !ok {
+			return common.Hash{}, false
+		}
+		storage := val.(common.Hash)
+		s.originStorage[key] = storage
+		return storage, true
+	}
+	return common.Hash{}, false
+}
+
+func (s *stateObject) setOriginStorage(key common.Hash, value common.Hash) {
+	if s.db.writeOnSharedStorage && s.sharedOriginStorage != nil {
+		s.sharedOriginStorage.Store(key, value)
+	}
+	s.originStorage[key] = value
+}
+
 // GetCommittedState retrieves a value from the committed account storage trie.
 func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 	// If we have a pending write or clean cached, return that
 	if value, pending := s.pendingStorage[key]; pending {
 		return value
 	}
-	if value, cached := s.originStorage[key]; cached {
+
+	if value, cached := s.getOriginStorage(key); cached {
 		return value
 	}
 	// If the object was destructed in *this* block (and potentially resurrected),
@@ -553,11 +578,4 @@ func (s *stateObject) Nonce() uint64 {
 
 func (s *stateObject) Root() common.Hash {
 	return s.data.Root
-}
-
-func (s *stateObject) setOriginStorage(key common.Hash, value common.Hash) {
-	if s.db.writeOnSharedStorage && s.sharedOriginStorage != nil {
-		s.sharedOriginStorage.Store(key, value)
-	}
-	s.originStorage[key] = value
 }
