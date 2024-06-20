@@ -20,6 +20,7 @@ package state
 import (
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -84,6 +85,9 @@ type StateDB struct {
 	stateObjectsDirty    map[common.Address]struct{}            // State objects modified in the current execution
 	stateObjectsDestruct map[common.Address]*types.StateAccount // State objects destructed in the block along with its previous value
 
+	storagePool          *StoragePool // sharedPool to store L1 originStorage of stateObjects
+	writeOnSharedStorage bool         // Write to the shared origin storage of a stateObject while reading from the underlying storage layer.
+
 	// DB error.
 	// State objects are used by the consensus core and VM which are
 	// unable to deal with database-level errors. Any error that occurs
@@ -138,6 +142,16 @@ type StateDB struct {
 
 	// Testing hooks
 	onCommit func(states *triestate.Set) // Hook invoked when commit is performed
+}
+
+// NewWithSharedPool creates a new state with sharedStorge on layer 1.5
+func NewWithSharedPool(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
+	statedb, err := New(root, db, snaps)
+	if err != nil {
+		return nil, err
+	}
+	statedb.storagePool = NewStoragePool()
+	return statedb, nil
 }
 
 // New creates a new state from a given trie.
@@ -1411,4 +1425,131 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
 		}
 	}
 	return copied
+}
+
+func (s *StateDB) GetStorage(address common.Address) *sync.Map {
+	return s.storagePool.getStorage(address)
+}
+
+func (s *StateDB) EnableWriteOnSharedStorage() {
+	s.writeOnSharedStorage = true
+}
+
+// It is mainly for state prefetcher to do trie prefetch right now.
+func (s *StateDB) CopyDoPrefetch() *StateDB {
+	return s.copyInternal(true)
+}
+
+// If doPrefetch is true, it tries to reuse the prefetcher, the copied StateDB will do active trie prefetch.
+// otherwise, just do inactive copy trie prefetcher.
+func (s *StateDB) copyInternal(doPrefetch bool) *StateDB {
+	// Copy all the basic fields, initialize the memory ones
+	state := &StateDB{
+		db:   s.db,
+		trie: s.db.CopyTrie(s.trie),
+		// noTrie:s.noTrie,
+		// expectedRoot:         s.expectedRoot,
+		// stateRoot:            s.stateRoot,
+		originalRoot: s.originalRoot,
+		// fullProcessed:        s.fullProcessed,
+		// pipeCommit:           s.pipeCommit,
+		accounts:             make(map[common.Hash][]byte),
+		storages:             make(map[common.Hash]map[common.Hash][]byte),
+		accountsOrigin:       make(map[common.Address][]byte),
+		storagesOrigin:       make(map[common.Address]map[common.Hash][]byte),
+		stateObjects:         make(map[common.Address]*stateObject, len(s.journal.dirties)),
+		stateObjectsPending:  make(map[common.Address]struct{}, len(s.stateObjectsPending)),
+		stateObjectsDirty:    make(map[common.Address]struct{}, len(s.journal.dirties)),
+		stateObjectsDestruct: make(map[common.Address]*types.StateAccount, len(s.stateObjectsDestruct)),
+		storagePool:          s.storagePool,
+		// writeOnSharedStorage: s.writeOnSharedStorage,
+		refund:    s.refund,
+		logs:      make(map[common.Hash][]*types.Log, len(s.logs)),
+		logSize:   s.logSize,
+		preimages: make(map[common.Hash][]byte, len(s.preimages)),
+		journal:   newJournal(),
+		hasher:    crypto.NewKeccakState(),
+
+		// In order for the block producer to be able to use and make additions
+		// to the snapshot tree, we need to copy that as well. Otherwise, any
+		// block mined by ourselves will cause gaps in the tree, and force the
+		// miner to operate trie-backed only.
+		snaps: s.snaps,
+		snap:  s.snap,
+	}
+	// Copy the dirty states, logs, and preimages
+	for addr := range s.journal.dirties {
+		// As documented [here](https://github.com/ethereum/go-ethereum/pull/16485#issuecomment-380438527),
+		// and in the Finalise-method, there is a case where an object is in the journal but not
+		// in the stateObjects: OOG after touch on ripeMD prior to Byzantium. Thus, we need to check for
+		// nil
+		if object, exist := s.stateObjects[addr]; exist {
+			// Even though the original object is dirty, we are not copying the journal,
+			// so we need to make sure that any side-effect the journal would have caused
+			// during a commit (or similar op) is already applied to the copy.
+			state.stateObjects[addr] = object.deepCopy(state)
+
+			state.stateObjectsDirty[addr] = struct{}{}   // Mark the copy dirty to force internal (code/state) commits
+			state.stateObjectsPending[addr] = struct{}{} // Mark the copy pending to force external (account) commits
+		}
+	}
+	// Above, we don't copy the actual journal. This means that if the copy
+	// is copied, the loop above will be a no-op, since the copy's journal
+	// is empty. Thus, here we iterate over stateObjects, to enable copies
+	// of copies.
+	for addr := range s.stateObjectsPending {
+		if _, exist := state.stateObjects[addr]; !exist {
+			state.stateObjects[addr] = s.stateObjects[addr].deepCopy(state)
+		}
+		state.stateObjectsPending[addr] = struct{}{}
+	}
+	for addr := range s.stateObjectsDirty {
+		if _, exist := state.stateObjects[addr]; !exist {
+			state.stateObjects[addr] = s.stateObjects[addr].deepCopy(state)
+		}
+		state.stateObjectsDirty[addr] = struct{}{}
+	}
+	// Deep copy the destruction markers.
+	for addr, value := range s.stateObjectsDestruct {
+		state.stateObjectsDestruct[addr] = value
+	}
+	// Deep copy the state changes made in the scope of block
+	// along with their original values.
+	state.accounts = copySet(s.accounts)
+	state.storages = copy2DSet(s.storages)
+	state.accountsOrigin = copySet(state.accountsOrigin)
+	state.storagesOrigin = copy2DSet(state.storagesOrigin)
+
+	// Deep copy the logs occurred in the scope of block
+	for hash, logs := range s.logs {
+		cpy := make([]*types.Log, len(logs))
+		for i, l := range logs {
+			cpy[i] = new(types.Log)
+			*cpy[i] = *l
+		}
+		state.logs[hash] = cpy
+	}
+	// Deep copy the preimages occurred in the scope of block
+	for hash, preimage := range s.preimages {
+		state.preimages[hash] = preimage
+	}
+	// Do we need to copy the access list and transient storage?
+	// In practice: No. At the start of a transaction, these two lists are empty.
+	// In practice, we only ever copy state _between_ transactions/blocks, never
+	// in the middle of a transaction. However, it doesn't cost us much to copy
+	// empty lists, so we do it anyway to not blow up if we ever decide copy them
+	// in the middle of a transaction.
+	if s.accessList != nil {
+		state.accessList = s.accessList.Copy()
+	}
+	state.transientStorage = s.transientStorage.Copy()
+
+	state.prefetcher = s.prefetcher
+	if s.prefetcher != nil && !doPrefetch {
+		// If there's a prefetcher running, make an inactive copy of it that can
+		// only access data but does not actively preload (since the user will not
+		// know that they need to explicitly terminate an active copy).
+		state.prefetcher = state.prefetcher.copy()
+	}
+	return state
 }

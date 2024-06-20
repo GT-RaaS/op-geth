@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -71,9 +72,10 @@ type stateObject struct {
 	trie Trie // storage trie, which becomes non-nil on first access
 	code Code // contract bytecode, which gets set when code is loaded
 
-	originStorage  Storage // Storage cache of original entries to dedup rewrites
-	pendingStorage Storage // Storage entries that need to be flushed to disk, at the end of an entire block
-	dirtyStorage   Storage // Storage entries that have been modified in the current transaction execution, reset for every transaction
+	sharedOriginStorage *sync.Map // Point to the entry of the stateObject in sharedPool
+	originStorage       Storage   // Storage cache of original entries to dedup rewrites
+	pendingStorage      Storage   // Storage entries that need to be flushed to disk, at the end of an entire block
+	dirtyStorage        Storage   // Storage entries that have been modified in the current transaction execution, reset for every transaction
 
 	// Cache flags.
 	dirtyCode bool // true if the code was updated
@@ -105,16 +107,24 @@ func newObject(db *StateDB, address common.Address, acct *types.StateAccount) *s
 	if acct == nil {
 		acct = types.NewEmptyStateAccount()
 	}
+
+	var storageMap *sync.Map
+	// Check whether the storage exist in pool, new originStorage if not exist
+	if db != nil && db.storagePool != nil {
+		storageMap = db.GetStorage(address)
+	}
+
 	return &stateObject{
-		db:             db,
-		address:        address,
-		addrHash:       crypto.Keccak256Hash(address[:]),
-		origin:         origin,
-		data:           *acct,
-		originStorage:  make(Storage),
-		pendingStorage: make(Storage),
-		dirtyStorage:   make(Storage),
-		created:        created,
+		db:                  db,
+		address:             address,
+		addrHash:            crypto.Keccak256Hash(address[:]),
+		origin:              origin,
+		data:                *acct,
+		sharedOriginStorage: storageMap,
+		originStorage:       make(Storage),
+		pendingStorage:      make(Storage),
+		dirtyStorage:        make(Storage),
+		created:             created,
 	}
 }
 
@@ -226,7 +236,7 @@ func (s *stateObject) GetCommittedState(key common.Hash) common.Hash {
 		}
 		value.SetBytes(val)
 	}
-	s.originStorage[key] = value
+	s.setOriginStorage(key, value)
 	return value
 }
 
@@ -543,4 +553,11 @@ func (s *stateObject) Nonce() uint64 {
 
 func (s *stateObject) Root() common.Hash {
 	return s.data.Root
+}
+
+func (s *stateObject) setOriginStorage(key common.Hash, value common.Hash) {
+	if s.db.writeOnSharedStorage && s.sharedOriginStorage != nil {
+		s.sharedOriginStorage.Store(key, value)
+	}
+	s.originStorage[key] = value
 }
