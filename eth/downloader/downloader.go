@@ -20,6 +20,7 @@ package downloader
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/trie"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -35,7 +36,6 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/triedb"
 )
 
 var (
@@ -215,7 +215,7 @@ type BlockChain interface {
 
 	// TrieDB retrieves the low level trie database used for interacting
 	// with trie nodes.
-	TrieDB() *triedb.Database
+	TrieDB() *trie.Database
 }
 
 // New creates a new downloader to fetch hashes and blocks from remote peers.

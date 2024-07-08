@@ -342,7 +342,7 @@ func (p *BlobPool) Filter(tx *types.Transaction) bool {
 // Init sets the gas price needed to keep a transaction in the pool and the chain
 // head to allow balance / nonce checks. The transaction journal will be loaded
 // from disk and filtered based on the provided starting settings.
-func (p *BlobPool) Init(gasTip uint64, head *types.Header, reserve txpool.AddressReserver) error {
+func (p *BlobPool) Init(gasTip *big.Int, head *types.Header, reserve txpool.AddressReserver) error {
 	p.reserve = reserve
 
 	var (
@@ -402,7 +402,7 @@ func (p *BlobPool) Init(gasTip uint64, head *types.Header, reserve txpool.Addres
 	}
 	var (
 		basefee = uint256.MustFromBig(eip1559.CalcBaseFee(p.chain.Config(), p.head, p.head.Time+1))
-		blobfee = uint256.NewInt(params.BlobTxMinBlobGasprice)
+		blobfee = uint256.MustFromBig(big.NewInt(params.BlobTxMinBlobGasprice))
 	)
 	if p.head.ExcessBlobGas != nil {
 		blobfee = uint256.MustFromBig(eip4844.CalcBlobFee(*p.head.ExcessBlobGas))
@@ -420,7 +420,7 @@ func (p *BlobPool) Init(gasTip uint64, head *types.Header, reserve txpool.Addres
 	basefeeGauge.Update(int64(basefee.Uint64()))
 	blobfeeGauge.Update(int64(blobfee.Uint64()))
 
-	p.SetGasTip(new(big.Int).SetUint64(gasTip))
+	p.SetGasTip(gasTip)
 
 	// Since the user might have modified their pool's capacity, evict anything
 	// above the current allowance
@@ -668,7 +668,7 @@ func (p *BlobPool) recheck(addr common.Address, inclusions map[common.Hash]uint6
 	// Ensure that there's no over-draft, this is expected to happen when some
 	// transactions get included without publishing on the network
 	var (
-		balance = p.state.GetBalance(addr)
+		balance = uint256.MustFromBig(p.state.GetBalance(addr))
 		spent   = p.spent[addr]
 	)
 	if spent.Cmp(balance) > 0 {
@@ -1443,15 +1443,7 @@ func (p *BlobPool) drop() {
 
 // Pending retrieves all currently processable transactions, grouped by origin
 // account and sorted by nonce.
-//
-// The transactions can also be pre-filtered by the dynamic fee components to
-// reduce allocations and load on downstream subsystems.
-func (p *BlobPool) Pending(filter txpool.PendingFilter) map[common.Address][]*txpool.LazyTransaction {
-	// If only plain transactions are requested, this pool is unsuitable as it
-	// contains none, don't even bother.
-	if filter.OnlyPlainTxs {
-		return nil
-	}
+func (p *BlobPool) Pending(enforceTips bool) map[common.Address][]*txpool.LazyTransaction {
 	// Track the amount of time waiting to retrieve the list of pending blob txs
 	// from the pool and the amount of time actually spent on assembling the data.
 	// The latter will be pretty much moot, but we've kept it to have symmetric
@@ -1461,40 +1453,20 @@ func (p *BlobPool) Pending(filter txpool.PendingFilter) map[common.Address][]*tx
 	pendwaitHist.Update(time.Since(pendStart).Nanoseconds())
 	defer p.lock.RUnlock()
 
-	execStart := time.Now()
-	defer func() {
-		pendtimeHist.Update(time.Since(execStart).Nanoseconds())
-	}()
+	defer func(start time.Time) {
+		pendtimeHist.Update(time.Since(start).Nanoseconds())
+	}(time.Now())
 
-	pending := make(map[common.Address][]*txpool.LazyTransaction, len(p.index))
+	pending := make(map[common.Address][]*txpool.LazyTransaction)
 	for addr, txs := range p.index {
-		lazies := make([]*txpool.LazyTransaction, 0, len(txs))
+		var lazies []*txpool.LazyTransaction
 		for _, tx := range txs {
-			// If transaction filtering was requested, discard badly priced ones
-			if filter.MinTip != nil && filter.BaseFee != nil {
-				if tx.execFeeCap.Lt(filter.BaseFee) {
-					break // basefee too low, cannot be included, discard rest of txs from the account
-				}
-				tip := new(uint256.Int).Sub(tx.execFeeCap, filter.BaseFee)
-				if tip.Gt(tx.execTipCap) {
-					tip = tx.execTipCap
-				}
-				if tip.Lt(filter.MinTip) {
-					break // allowed or remaining tip too low, cannot be included, discard rest of txs from the account
-				}
-			}
-			if filter.BlobFee != nil {
-				if tx.blobFeeCap.Lt(filter.BlobFee) {
-					break // blobfee too low, cannot be included, discard rest of txs from the account
-				}
-			}
-			// Transaction was accepted according to the filter, append to the pending list
 			lazies = append(lazies, &txpool.LazyTransaction{
 				Pool:      p,
 				Hash:      tx.hash,
-				Time:      execStart, // TODO(karalabe): Maybe save these and use that?
-				GasFeeCap: tx.execFeeCap,
-				GasTipCap: tx.execTipCap,
+				Time:      time.Now(), // TODO(karalabe): Maybe save these and use that?
+				GasFeeCap: tx.execFeeCap.ToBig(),
+				GasTipCap: tx.execTipCap.ToBig(),
 				Gas:       tx.execGas,
 				BlobGas:   tx.blobGas,
 			})
@@ -1589,6 +1561,13 @@ func (p *BlobPool) SubscribeTransactions(ch chan<- core.NewTxsEvent, reorgs bool
 	} else {
 		return p.discoverFeed.Subscribe(ch)
 	}
+}
+
+// SubscribeReannoTxsEvent registers a subscription of ReannoTxsEvent and
+// starts sending event to the given channel.
+func (p *BlobPool) SubscribeReannoTxsEvent(ch chan<- core.ReannoTxsEvent) event.Subscription {
+	// Disable SubscribeReannoTxsEvent
+	return nil
 }
 
 // Nonce returns the next nonce of an account, with all transactions executable

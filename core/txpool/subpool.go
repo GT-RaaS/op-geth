@@ -35,9 +35,9 @@ type LazyTransaction struct {
 	Hash common.Hash        // Transaction hash to pull up if needed
 	Tx   *types.Transaction // Transaction if already resolved
 
-	Time      time.Time    // Time when the transaction was first seen
-	GasFeeCap *uint256.Int // Maximum fee per gas the transaction may consume
-	GasTipCap *uint256.Int // Maximum miner tip per gas the transaction can pay
+	Time      time.Time // Time when the transaction was first seen
+	GasFeeCap *big.Int  // Maximum fee per gas the transaction may consume
+	GasTipCap *big.Int  // Maximum miner tip per gas the transaction can pay
 
 	Gas     uint64 // Amount of gas required by the transaction
 	BlobGas uint64 // Amount of blob gas required by the transaction
@@ -91,7 +91,7 @@ type PendingFilter struct {
 // production, this interface defines the common methods that allow the primary
 // transaction pool to manage the subpools.
 type SubPool interface {
-	// Filter is a selector used to decide whether a transaction would be added
+	// Filter is a selector used to decide whether a transaction whould be added
 	// to this particular subpool.
 	Filter(tx *types.Transaction) bool
 
@@ -102,7 +102,7 @@ type SubPool interface {
 	// These should not be passed as a constructor argument - nor should the pools
 	// start by themselves - in order to keep multiple subpools in lockstep with
 	// one another.
-	Init(gasTip uint64, head *types.Header, reserve AddressReserver) error
+	Init(gasTip *big.Int, head *types.Header, reserve AddressReserver) error
 
 	// Close terminates any background processing threads and releases any held
 	// resources.
@@ -130,15 +130,16 @@ type SubPool interface {
 
 	// Pending retrieves all currently processable transactions, grouped by origin
 	// account and sorted by nonce.
-	//
-	// The transactions can also be pre-filtered by the dynamic fee components to
-	// reduce allocations and load on downstream subsystems.
-	Pending(filter PendingFilter) map[common.Address][]*LazyTransaction
+	Pending(enforceTips bool) map[common.Address][]*LazyTransaction
 
 	// SubscribeTransactions subscribes to new transaction events. The subscriber
 	// can decide whether to receive notifications only for newly seen transactions
 	// or also for reorged out ones.
 	SubscribeTransactions(ch chan<- core.NewTxsEvent, reorgs bool) event.Subscription
+
+	// SubscribeReannoTxsEvent registers a subscription of ReannoTxsEvent and
+	// starts sending event to the given channel.
+	SubscribeReannoTxsEvent(ch chan<- core.ReannoTxsEvent) event.Subscription
 
 	// Nonce returns the next nonce of an account, with all transactions executable
 	// by the pool already applied on top.

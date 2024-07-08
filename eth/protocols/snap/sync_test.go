@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"github.com/ethereum/go-ethereum/trie/triedb/pathdb"
 	"math/big"
 	mrand "math/rand"
 	"sync"
@@ -37,8 +38,6 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/trie/testutil"
 	"github.com/ethereum/go-ethereum/trie/trienode"
-	"github.com/ethereum/go-ethereum/triedb"
-	"github.com/ethereum/go-ethereum/triedb/pathdb"
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 	"golang.org/x/exp/slices"
@@ -1505,7 +1504,7 @@ func getCodeByHash(hash common.Hash) []byte {
 // makeAccountTrieNoStorage spits out a trie, along with the leafs
 func makeAccountTrieNoStorage(n int, scheme string) (string, *trie.Trie, []*kv) {
 	var (
-		db      = triedb.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
+		db      = trie.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
 		accTrie = trie.NewEmpty(db)
 		entries []*kv
 	)
@@ -1540,7 +1539,7 @@ func makeBoundaryAccountTrie(scheme string, n int) (string, *trie.Trie, []*kv) {
 		entries    []*kv
 		boundaries []common.Hash
 
-		db      = triedb.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
+		db      = trie.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
 		accTrie = trie.NewEmpty(db)
 	)
 	// Initialize boundaries
@@ -1598,7 +1597,7 @@ func makeBoundaryAccountTrie(scheme string, n int) (string, *trie.Trie, []*kv) {
 // has a unique storage set.
 func makeAccountTrieWithStorageWithUniqueStorage(scheme string, accounts, slots int, code bool) (string, *trie.Trie, []*kv, map[common.Hash]*trie.Trie, map[common.Hash][]*kv) {
 	var (
-		db             = triedb.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
+		db             = trie.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
 		accTrie        = trie.NewEmpty(db)
 		entries        []*kv
 		storageRoots   = make(map[common.Hash]common.Hash)
@@ -1653,7 +1652,7 @@ func makeAccountTrieWithStorageWithUniqueStorage(scheme string, accounts, slots 
 // makeAccountTrieWithStorage spits out a trie, along with the leafs
 func makeAccountTrieWithStorage(scheme string, accounts, slots int, code, boundary bool, uneven bool) (*trie.Trie, []*kv, map[common.Hash]*trie.Trie, map[common.Hash][]*kv) {
 	var (
-		db             = triedb.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
+		db             = trie.NewDatabase(rawdb.NewMemoryDatabase(), newDbConfig(scheme))
 		accTrie        = trie.NewEmpty(db)
 		entries        []*kv
 		storageRoots   = make(map[common.Hash]common.Hash)
@@ -1726,7 +1725,7 @@ func makeAccountTrieWithStorage(scheme string, accounts, slots int, code, bounda
 // makeStorageTrieWithSeed fills a storage trie with n items, returning the
 // not-yet-committed trie and the sorted entries. The seeds can be used to ensure
 // that tries are unique.
-func makeStorageTrieWithSeed(owner common.Hash, n, seed uint64, db *triedb.Database) (common.Hash, *trienode.NodeSet, []*kv) {
+func makeStorageTrieWithSeed(owner common.Hash, n, seed uint64, db *trie.Database) (common.Hash, *trienode.NodeSet, []*kv) {
 	trie, _ := trie.New(trie.StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
 	var entries []*kv
 	for i := uint64(1); i <= n; i++ {
@@ -1749,7 +1748,7 @@ func makeStorageTrieWithSeed(owner common.Hash, n, seed uint64, db *triedb.Datab
 // makeBoundaryStorageTrie constructs a storage trie. Instead of filling
 // storage slots normally, this function will fill a few slots which have
 // boundary hash.
-func makeBoundaryStorageTrie(owner common.Hash, n int, db *triedb.Database) (common.Hash, *trienode.NodeSet, []*kv) {
+func makeBoundaryStorageTrie(owner common.Hash, n int, db *trie.Database) (common.Hash, *trienode.NodeSet, []*kv) {
 	var (
 		entries    []*kv
 		boundaries []common.Hash
@@ -1799,7 +1798,7 @@ func makeBoundaryStorageTrie(owner common.Hash, n int, db *triedb.Database) (com
 
 // makeUnevenStorageTrie constructs a storage tries will states distributed in
 // different range unevenly.
-func makeUnevenStorageTrie(owner common.Hash, slots int, db *triedb.Database) (common.Hash, *trienode.NodeSet, []*kv) {
+func makeUnevenStorageTrie(owner common.Hash, slots int, db *trie.Database) (common.Hash, *trienode.NodeSet, []*kv) {
 	var (
 		entries []*kv
 		tr, _   = trie.New(trie.StorageTrieID(types.EmptyRootHash, owner, types.EmptyRootHash), db)
@@ -1831,7 +1830,7 @@ func makeUnevenStorageTrie(owner common.Hash, slots int, db *triedb.Database) (c
 
 func verifyTrie(scheme string, db ethdb.KeyValueStore, root common.Hash, t *testing.T) {
 	t.Helper()
-	triedb := triedb.NewDatabase(rawdb.NewDatabase(db), newDbConfig(scheme))
+	triedb := trie.NewDatabase(rawdb.NewDatabase(db), newDbConfig(scheme))
 	accTrie, err := trie.New(trie.StateTrieID(root), triedb)
 	if err != nil {
 		t.Fatal(err)
@@ -1968,9 +1967,9 @@ func TestSlotEstimation(t *testing.T) {
 	}
 }
 
-func newDbConfig(scheme string) *triedb.Config {
+func newDbConfig(scheme string) *trie.Config {
 	if scheme == rawdb.HashScheme {
-		return &triedb.Config{}
+		return &trie.Config{}
 	}
-	return &triedb.Config{PathDB: pathdb.Defaults}
+	return &trie.Config{PathDB: pathdb.Defaults}
 }

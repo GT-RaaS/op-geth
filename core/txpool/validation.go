@@ -35,16 +35,7 @@ import (
 // are not able to consume all of the gas in a L2 block as the L1 info deposit is always present.
 const l1InfoGasOverhead = uint64(70_000)
 
-var (
-	// blobTxMinBlobGasPrice is the big.Int version of the configured protocol
-	// parameter to avoid constucting a new big integer for every transaction.
-	blobTxMinBlobGasPrice = big.NewInt(params.BlobTxMinBlobGasprice)
-)
-
-func EffectiveGasLimit(chainConfig *params.ChainConfig, gasLimit uint64, effectiveLimit uint64) uint64 {
-	if effectiveLimit != 0 && effectiveLimit < gasLimit {
-		gasLimit = effectiveLimit
-	}
+func EffectiveGasLimit(chainConfig *params.ChainConfig, gasLimit uint64) uint64 {
 	if chainConfig.Optimism != nil {
 		if l1InfoGasOverhead < gasLimit {
 			gasLimit -= l1InfoGasOverhead
@@ -112,7 +103,7 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 		return ErrNegativeValue
 	}
 	// Ensure the transaction doesn't exceed the current block limit gas
-	if EffectiveGasLimit(opts.Config, head.GasLimit, opts.EffectiveGasCeil) < tx.Gas() {
+	if EffectiveGasLimit(opts.Config, head.GasLimit) < tx.Gas() {
 		return ErrGasLimit
 	}
 	// Sanity check for extremely large numbers (supported by RLP or RPC)
@@ -144,10 +135,6 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 		return fmt.Errorf("%w: gas tip cap %v, minimum needed %v", ErrUnderpriced, tx.GasTipCap(), opts.MinTip)
 	}
 	if tx.Type() == types.BlobTxType {
-		// Ensure the blob fee cap satisfies the minimum blob gas price
-		if tx.BlobGasFeeCapIntCmp(blobTxMinBlobGasPrice) < 0 {
-			return fmt.Errorf("%w: blob fee cap %v, minimum needed %v", ErrUnderpriced, tx.BlobGasFeeCap(), blobTxMinBlobGasPrice)
-		}
 		sidecar := tx.BlobTxSidecar()
 		if sidecar == nil {
 			return fmt.Errorf("missing sidecar in blob transaction")
@@ -251,7 +238,7 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 	}
 	// Ensure the transactor has enough funds to cover the transaction costs
 	var (
-		balance = opts.State.GetBalance(from).ToBig()
+		balance = opts.State.GetBalance(from)
 		cost    = tx.Cost()
 	)
 	if opts.L1CostFn != nil {

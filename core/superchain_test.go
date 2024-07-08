@@ -1,12 +1,12 @@
 package core
 
 import (
+	"github.com/ethereum/go-ethereum/trie"
 	"testing"
 
 	"github.com/ethereum-optimism/superchain-registry/superchain"
 
 	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/triedb"
 )
 
 func TestOPStackGenesis(t *testing.T) {
@@ -31,7 +31,7 @@ func TestRegistryChainConfigOverride(t *testing.T) {
 	genesis.Config.RegolithTime = nil
 
 	// initialize the DB
-	tdb := triedb.NewDatabase(db, newDbConfig(rawdb.PathScheme))
+	tdb := trie.NewDatabase(db, newDbConfig(rawdb.PathScheme))
 	genesis.MustCommit(db, tdb)
 	bl := genesis.ToBlock()
 	rawdb.WriteCanonicalHash(db, bl.Hash(), 0)

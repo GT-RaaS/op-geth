@@ -37,7 +37,6 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
-	"github.com/ethereum/go-ethereum/triedb"
 )
 
 type mockBackend struct {
@@ -301,7 +300,7 @@ func createMiner(t *testing.T) (*Miner, *event.TypeMux, func(skipMiner bool)) {
 	}
 	// Create chainConfig
 	chainDB := rawdb.NewMemoryDatabase()
-	triedb := triedb.NewDatabase(chainDB, nil)
+	triedb := trie.NewDatabase(chainDB, nil)
 	genesis := minerTestGenesisBlock(15, 11_500_000, common.HexToAddress("12345"))
 	chainConfig, _, err := core.SetupGenesisBlock(chainDB, triedb, genesis)
 	if err != nil {
@@ -318,7 +317,7 @@ func createMiner(t *testing.T) (*Miner, *event.TypeMux, func(skipMiner bool)) {
 	blockchain := &testBlockChain{bc.Genesis().Root(), chainConfig, statedb, 10000000, new(event.Feed)}
 
 	pool := legacypool.New(testTxPoolConfig, blockchain)
-	txpool, _ := txpool.New(testTxPoolConfig.PriceLimit, blockchain, []txpool.SubPool{pool})
+	txpool, _ := txpool.New(new(big.Int).SetUint64(testTxPoolConfig.PriceLimit), blockchain, []txpool.SubPool{pool})
 
 	backend := NewMockBackend(bc, txpool)
 	// Create event Mux

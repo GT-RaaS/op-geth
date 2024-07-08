@@ -589,17 +589,15 @@ func (w *worker) mainLoop() {
 						Hash:      tx.Hash(),
 						Tx:        nil, // Do *not* set this! We need to resolve it later to pull blobs in
 						Time:      tx.Time(),
-						GasFeeCap: uint256.MustFromBig(tx.GasFeeCap()),
-						GasTipCap: uint256.MustFromBig(tx.GasTipCap()),
+						GasFeeCap: tx.GasFeeCap(),
+						GasTipCap: tx.GasTipCap(),
 						Gas:       tx.Gas(),
 						BlobGas:   tx.BlobGas(),
 					})
 				}
-				plainTxs := newTransactionsByPriceAndNonce(w.current.signer, txs, w.current.header.BaseFee) // Mixed bag of everrything, yolo
-				blobTxs := newTransactionsByPriceAndNonce(w.current.signer, nil, w.current.header.BaseFee)  // Empty bag, don't bother optimising
-
+				txset := newTransactionsByPriceAndNonce(w.current.signer, txs, w.current.header.BaseFee)
 				tcount := w.current.tcount
-				w.commitTransactions(w.current, plainTxs, blobTxs, nil)
+				w.commitTransactions(w.current, txset, nil)
 
 				// Only update the snapshot if any new transactions were added
 				// to the pending block
@@ -846,7 +844,7 @@ func (w *worker) applyTransaction(env *environment, tx *types.Transaction) (*typ
 	return receipt, err
 }
 
-func (w *worker) commitTransactions(env *environment, plainTxs, blobTxs *transactionsByPriceAndNonce, interrupt *atomic.Int32) error {
+func (w *worker) commitTransactions(env *environment, txs *transactionsByPriceAndNonce, interrupt *atomic.Int32) error {
 	gasLimit := env.header.GasLimit
 	if env.gasPool == nil {
 		env.gasPool = new(core.GasPool).AddGas(gasLimit)
@@ -865,33 +863,8 @@ func (w *worker) commitTransactions(env *environment, plainTxs, blobTxs *transac
 			log.Trace("Not enough gas for further transactions", "have", env.gasPool, "want", params.TxGas)
 			break
 		}
-		// If we don't have enough blob space for any further blob transactions,
-		// skip that list altogether
-		if !blobTxs.Empty() && env.blobs*params.BlobTxBlobGasPerBlob >= params.MaxBlobGasPerBlock {
-			log.Trace("Not enough blob space for further blob transactions")
-			blobTxs.Clear()
-			// Fall though to pick up any plain txs
-		}
 		// Retrieve the next transaction and abort if all done.
-		var (
-			ltx *txpool.LazyTransaction
-			txs *transactionsByPriceAndNonce
-		)
-		pltx, ptip := plainTxs.Peek()
-		bltx, btip := blobTxs.Peek()
-
-		switch {
-		case pltx == nil:
-			txs, ltx = blobTxs, bltx
-		case bltx == nil:
-			txs, ltx = plainTxs, pltx
-		default:
-			if ptip.Lt(btip) {
-				txs, ltx = blobTxs, bltx
-			} else {
-				txs, ltx = plainTxs, pltx
-			}
-		}
+		ltx := txs.Peek()
 		if ltx == nil {
 			break
 		}
@@ -1107,57 +1080,45 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 // into the given sealing block. The transaction selection and ordering strategy can
 // be customized with the plugin in the future.
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) error {
-	w.mu.RLock()
-	tip := w.tip
-	w.mu.RUnlock()
+	// TODO will remove after fix txpool perf issue
+	if interrupt != nil {
+		if signal := interrupt.Load(); signal != commitInterruptNone {
+			return signalToErr(signal)
+		}
+	}
 
-	// Retrieve the pending transactions pre-filtered by the 1559/4844 dynamic fees
-	filter := txpool.PendingFilter{
-		MinTip: tip,
-	}
-	if env.header.BaseFee != nil {
-		filter.BaseFee = uint256.MustFromBig(env.header.BaseFee)
-	}
-	if env.header.ExcessBlobGas != nil {
-		filter.BlobFee = uint256.MustFromBig(eip4844.CalcBlobFee(*env.header.ExcessBlobGas))
-	}
-	filter.OnlyPlainTxs, filter.OnlyBlobTxs = true, false
-	pendingPlainTxs := w.eth.TxPool().Pending(filter)
-
-	filter.OnlyPlainTxs, filter.OnlyBlobTxs = false, true
-	pendingBlobTxs := w.eth.TxPool().Pending(filter)
+	start := time.Now()
+	pending := w.eth.TxPool().Pending(true)
+	packFromTxpoolTimer.UpdateSince(start)
+	log.Debug("packFromTxpoolTimer", "duration", common.PrettyDuration(time.Since(start)), "hash", env.header.Hash())
 
 	// Split the pending transactions into locals and remotes.
-	localPlainTxs, remotePlainTxs := make(map[common.Address][]*txpool.LazyTransaction), pendingPlainTxs
-	localBlobTxs, remoteBlobTxs := make(map[common.Address][]*txpool.LazyTransaction), pendingBlobTxs
+	localTxs, remoteTxs := make(map[common.Address][]*txpool.LazyTransaction), pending
 
-	for _, account := range w.eth.TxPool().Locals() {
-		if txs := remotePlainTxs[account]; len(txs) > 0 {
-			delete(remotePlainTxs, account)
-			localPlainTxs[account] = txs
-		}
-		if txs := remoteBlobTxs[account]; len(txs) > 0 {
-			delete(remoteBlobTxs, account)
-			localBlobTxs[account] = txs
-		}
-	}
+	// TODO will remove after fix txpool perf issue
+	// for _, account := range w.eth.TxPool().Locals() {
+	// 	if txs := remoteTxs[account]; len(txs) > 0 {
+	// 		delete(remoteTxs, account)
+	// 		localTxs[account] = txs
+	// 	}
+	// }
+
 	// Fill the block with all available pending transactions.
-	if len(localPlainTxs) > 0 || len(localBlobTxs) > 0 {
-		plainTxs := newTransactionsByPriceAndNonce(env.signer, localPlainTxs, env.header.BaseFee)
-		blobTxs := newTransactionsByPriceAndNonce(env.signer, localBlobTxs, env.header.BaseFee)
-
-		if err := w.commitTransactions(env, plainTxs, blobTxs, interrupt); err != nil {
+	start = time.Now()
+	if len(localTxs) > 0 {
+		txs := newTransactionsByPriceAndNonce(env.signer, localTxs, env.header.BaseFee)
+		if err := w.commitTransactions(env, txs, interrupt); err != nil {
 			return err
 		}
 	}
-	if len(remotePlainTxs) > 0 || len(remoteBlobTxs) > 0 {
-		plainTxs := newTransactionsByPriceAndNonce(env.signer, remotePlainTxs, env.header.BaseFee)
-		blobTxs := newTransactionsByPriceAndNonce(env.signer, remoteBlobTxs, env.header.BaseFee)
-
-		if err := w.commitTransactions(env, plainTxs, blobTxs, interrupt); err != nil {
+	if len(remoteTxs) > 0 {
+		txs := newTransactionsByPriceAndNonce(env.signer, remoteTxs, env.header.BaseFee)
+		if err := w.commitTransactions(env, txs, interrupt); err != nil {
 			return err
 		}
 	}
+	commitTxpoolTxsTimer.UpdateSince(start)
+	log.Debug("commitTxpoolTxsTimer", "duration", common.PrettyDuration(time.Since(start)), "hash", env.header.Hash())
 	return nil
 }
 

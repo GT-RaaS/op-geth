@@ -80,8 +80,6 @@ var (
 	txIndexTailKey = []byte("TransactionIndexTail")
 
 	// fastTxLookupLimitKey tracks the transaction lookup limit during fast sync.
-	// This flag is deprecated, it's kept to avoid reporting errors when inspect
-	// database.
 	fastTxLookupLimitKey = []byte("FastTransactionLookupLimit")
 
 	// badBlockKey tracks the list of bad blocks seen by local
@@ -116,6 +114,9 @@ var (
 	trieNodeAccountPrefix = []byte("A") // trieNodeAccountPrefix + hexPath -> trie node
 	trieNodeStoragePrefix = []byte("O") // trieNodeStoragePrefix + accountHash + hexPath -> trie node
 	stateIDPrefix         = []byte("L") // stateIDPrefix + state root -> state id
+
+	// which is used by proof keeper.
+	proofKeeperMetaPrefix = []byte("p") // proofKeeperMetaPrefix + num (uint64 big endian) -> proof keeper meta
 
 	PreimagePrefix = []byte("secure-key-")       // PreimagePrefix + hash -> preimage
 	configPrefix   = []byte("ethereum-config-")  // config prefix for the db
@@ -165,6 +166,11 @@ func headerKeyPrefix(number uint64) []byte {
 // headerKey = headerPrefix + num (uint64 big endian) + hash
 func headerKey(number uint64, hash common.Hash) []byte {
 	return append(append(headerPrefix, encodeBlockNumber(number)...), hash.Bytes()...)
+}
+
+// proofKeeperMetaKey = proofKeeperMetaPrefix + num (uint64 big endian)
+func proofKeeperMetaKey(number uint64) []byte {
+	return append(proofKeeperMetaPrefix, encodeBlockNumber(number)...)
 }
 
 // headerTDKey = headerPrefix + num (uint64 big endian) + hash + headerTDSuffix

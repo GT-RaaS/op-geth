@@ -48,7 +48,6 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
-	"github.com/holiman/uint256"
 	"github.com/tyler-smith/go-bip39"
 )
 
@@ -670,8 +669,7 @@ func (s *BlockChainAPI) GetBalance(ctx context.Context, address common.Address, 
 	if state == nil || err != nil {
 		return nil, err
 	}
-	b := state.GetBalance(address).ToBig()
-	return (*hexutil.Big)(b), state.Error()
+	return (*hexutil.Big)(state.GetBalance(address)), state.Error()
 }
 
 // AccountResult structs for GetProof
@@ -785,16 +783,16 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address common.Address, st
 	if err := tr.Prove(crypto.Keccak256(address.Bytes()), &accountProof); err != nil {
 		return nil, err
 	}
-	balance := statedb.GetBalance(address).ToBig()
+	err = statedb.Error()
 	return &AccountResult{
 		Address:      address,
 		AccountProof: accountProof,
-		Balance:      (*hexutil.Big)(balance),
+		Balance:      (*hexutil.Big)(statedb.GetBalance(address)),
 		CodeHash:     codeHash,
 		Nonce:        hexutil.Uint64(statedb.GetNonce(address)),
 		StorageHash:  storageRoot,
 		StorageProof: storageProof,
-	}, statedb.Error()
+	}, err
 }
 
 // decodeHash parses a hex-encoded 32-byte hash. The input may optionally
@@ -1062,8 +1060,7 @@ func (diff *StateOverride) Apply(state *state.StateDB) error {
 		}
 		// Override account balance.
 		if account.Balance != nil {
-			u256Balance, _ := uint256.FromBig((*big.Int)(*account.Balance))
-			state.SetBalance(addr, u256Balance)
+			state.SetBalance(addr, (*big.Int)(*account.Balance))
 		}
 		if account.State != nil && account.StateDiff != nil {
 			return fmt.Errorf("account %s has both 'state' and 'stateDiff'", addr.Hex())
