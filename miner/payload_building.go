@@ -118,7 +118,7 @@ func newPayload(empty *types.Block, id engine.PayloadID) *Payload {
 var errInterruptedUpdate = errors.New("interrupted payload update")
 
 // update updates the full-block with latest built version.
-func (payload *Payload) update(r *newPayloadResult, elapsed time.Duration) {
+func (payload *Payload) update(r *newPayloadResult, elapsed time.Duration, postFuncs ...func()) {
 	payload.lock.Lock()
 	defer payload.lock.Unlock()
 
@@ -160,7 +160,14 @@ func (payload *Payload) update(r *newPayloadResult, elapsed time.Duration) {
 			"root", r.block.Root(),
 			"elapsed", common.PrettyDuration(elapsed),
 		)
+
+		for _, postFunc := range postFuncs {
+			if postFunc != nil {
+				postFunc()
+			}
+		}
 	}
+
 }
 
 // Resolve returns the latest built payload and also terminates the background
@@ -338,7 +345,9 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 			r := w.getSealingBlock(fullParams)
 			dur := time.Since(start)
 			// update handles error case
-			payload.update(r, dur)
+			payload.update(r, dur, func() {
+				w.cacheMiningBlock(r.block, r.env)
+			})
 			if r.err == nil {
 				// after first successful pass, we're updating
 				fullParams.isUpdate = true
@@ -374,4 +383,41 @@ func (w *worker) buildPayload(args *BuildPayloadArgs) (*Payload, error) {
 		}
 	}()
 	return payload, nil
+}
+
+func (w *worker) cacheMiningBlock(block *types.Block, env *environment) {
+	var (
+		start    = time.Now()
+		receipts = make([]*types.Receipt, len(env.receipts))
+		logs     []*types.Log
+		hash     = block.Hash()
+	)
+	for i, taskReceipt := range env.receipts {
+		receipt := new(types.Receipt)
+		receipts[i] = receipt
+		*receipt = *taskReceipt
+
+		// add block location fields
+		receipt.BlockHash = hash
+		receipt.BlockNumber = block.Number()
+		receipt.TransactionIndex = uint(i)
+
+		// Update the block hash in all logs since it is now available and not when the
+		// receipt/log of individual transactions were created.
+		receipt.Logs = make([]*types.Log, len(taskReceipt.Logs))
+		for i, taskLog := range taskReceipt.Logs {
+			log := new(types.Log)
+			receipt.Logs[i] = log
+			*log = *taskLog
+			log.BlockHash = hash
+		}
+		logs = append(logs, receipt.Logs...)
+	}
+
+	w.chain.CacheMiningReceipts(hash, receipts)
+	w.chain.CacheMiningTxLogs(hash, logs)
+	w.chain.CacheMiningState(hash, env.state)
+
+	log.Info("Successfully cached sealed new block", "number", block.Number(), "root", block.Root(), "hash", hash,
+		"elapsed", common.PrettyDuration(time.Since(start)))
 }
