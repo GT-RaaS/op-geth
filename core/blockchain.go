@@ -1776,7 +1776,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			err               error
 		)
 		if !(receiptExist && logExist && stateExist) {
-			log.Info("test run")
+			log.Info("Read data from cache!")
 			// Retrieve the parent block and it's state to execute on top
 			parent := it.previous()
 			if parent == nil {
@@ -1819,8 +1819,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 				return it.index, err
 			}
 
-		} else {
-			log.Info("test run1")
 		}
 		ptime := time.Since(pstart)
 
