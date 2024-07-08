@@ -407,6 +407,8 @@ type ChainConfig struct {
 	// even without having seen the TTD locally (safer long term).
 	TerminalTotalDifficultyPassed bool `json:"terminalTotalDifficultyPassed,omitempty"`
 
+	HertzfixBlock *big.Int `json:"hertzfixBlock,omitempty"` // hertzfixBlock switch block (nil = no fork, 0 = already activated)
+
 	// Various consensus engines
 	Ethash *EthashConfig `json:"ethash,omitempty"`
 	Clique *CliqueConfig `json:"clique,omitempty"`
@@ -1080,4 +1082,8 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsOptimismCanyon:   isMerge && c.IsOptimismCanyon(timestamp),
 		IsOptimismFjord:    isMerge && c.IsOptimismFjord(timestamp),
 	}
+}
+
+func (c *ChainConfig) IsHertzfix(num *big.Int) bool {
+	return isBlockForked(c.HertzfixBlock, num)
 }

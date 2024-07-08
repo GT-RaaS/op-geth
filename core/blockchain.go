@@ -237,10 +237,11 @@ type BlockChain struct {
 	// Readers don't need to take it, they can just read the database.
 	chainmu *syncx.ClosableMutex
 
-	currentBlock      atomic.Pointer[types.Header] // Current head of the chain
-	currentSnapBlock  atomic.Pointer[types.Header] // Current head of snap-sync
-	currentFinalBlock atomic.Pointer[types.Header] // Latest (consensus) finalized block
-	currentSafeBlock  atomic.Pointer[types.Header] // Latest (consensus) safe block
+	highestVerifiedHeader atomic.Pointer[types.Header]
+	currentBlock          atomic.Pointer[types.Header] // Current head of the chain
+	currentSnapBlock      atomic.Pointer[types.Header] // Current head of snap-sync
+	currentFinalBlock     atomic.Pointer[types.Header] // Latest (consensus) finalized block
+	currentSafeBlock      atomic.Pointer[types.Header] // Latest (consensus) safe block
 
 	miningReceiptsCache *lru.Cache[common.Hash, []*types.Receipt]
 	miningTxLogsCache   *lru.Cache[common.Hash, []*types.Log]
@@ -1782,10 +1783,12 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			if parent == nil {
 				parent = bc.GetHeader(block.ParentHash(), block.NumberU64()-1)
 			}
-			statedb, err := state.New(parent.Root, bc.stateCache, bc.snaps)
+			statedb, err := state.NewWithSharedPool(parent.Root, bc.stateCache, bc.snaps)
 			if err != nil {
 				return it.index, err
 			}
+
+			bc.updateHighestVerifiedHeader(block.Header())
 
 			// Enable prefetching to pull in trie node paths while processing transactions
 			statedb.StartPrefetcher("chain")
@@ -2507,4 +2510,31 @@ func (bc *BlockChain) SetTrieFlushInterval(interval time.Duration) {
 // GetTrieFlushInterval gets the in-memory tries flushAlloc interval
 func (bc *BlockChain) GetTrieFlushInterval() time.Duration {
 	return time.Duration(bc.flushInterval.Load())
+}
+
+func (bc *BlockChain) updateHighestVerifiedHeader(header *types.Header) {
+	if header == nil || header.Number == nil {
+		return
+	}
+	currentHeader := bc.highestVerifiedHeader.Load()
+	if currentHeader == nil {
+		bc.highestVerifiedHeader.Store(types.CopyHeader(header))
+		return
+	}
+
+	newParentTD := bc.GetTd(header.ParentHash, header.Number.Uint64()-1)
+	if newParentTD == nil {
+		newParentTD = big.NewInt(0)
+	}
+	oldParentTD := bc.GetTd(currentHeader.ParentHash, currentHeader.Number.Uint64()-1)
+	if oldParentTD == nil {
+		oldParentTD = big.NewInt(0)
+	}
+	newTD := big.NewInt(0).Add(newParentTD, header.Difficulty)
+	oldTD := big.NewInt(0).Add(oldParentTD, currentHeader.Difficulty)
+
+	if newTD.Cmp(oldTD) > 0 {
+		bc.highestVerifiedHeader.Store(types.CopyHeader(header))
+		return
+	}
 }
