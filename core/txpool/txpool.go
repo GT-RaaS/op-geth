@@ -81,7 +81,7 @@ type TxPool struct {
 
 // New creates a new transaction pool to gather, sort and filter inbound
 // transactions from the network.
-func New(gasTip uint64, chain BlockChain, subpools []SubPool) (*TxPool, error) {
+func New(gasTip *big.Int, chain BlockChain, subpools []SubPool) (*TxPool, error) {
 	// Retrieve the current head so that all subpools and this main coordinator
 	// pool will have the same starting state, even if the chain moves forward
 	// during initialization.
@@ -355,13 +355,10 @@ func (p *TxPool) Add(txs []*types.Transaction, local bool, sync bool) []error {
 
 // Pending retrieves all currently processable transactions, grouped by origin
 // account and sorted by nonce.
-//
-// The transactions can also be pre-filtered by the dynamic fee components to
-// reduce allocations and load on downstream subsystems.
-func (p *TxPool) Pending(filter PendingFilter) map[common.Address][]*LazyTransaction {
+func (p *TxPool) Pending(enforceTips bool) map[common.Address][]*LazyTransaction {
 	txs := make(map[common.Address][]*LazyTransaction)
 	for _, subpool := range p.subpools {
-		for addr, set := range subpool.Pending(filter) {
+		for addr, set := range subpool.Pending(enforceTips) {
 			txs[addr] = set
 		}
 	}

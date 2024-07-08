@@ -23,6 +23,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/trie/triedb/hashdb"
+	"github.com/ethereum/go-ethereum/trie/triedb/pathdb"
 	"math"
 	"math/big"
 	"net"
@@ -69,9 +72,6 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/netutil"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
-	"github.com/ethereum/go-ethereum/triedb"
-	"github.com/ethereum/go-ethereum/triedb/hashdb"
-	"github.com/ethereum/go-ethereum/triedb/pathdb"
 	pcsclite "github.com/gballet/go-libpcsclite"
 	gopsutil "github.com/shirou/gopsutil/mem"
 	"github.com/urfave/cli/v2"
@@ -1606,11 +1606,12 @@ func setTxPool(ctx *cli.Context, cfg *legacypool.Config) {
 	if ctx.IsSet(TxPoolLifetimeFlag.Name) {
 		cfg.Lifetime = ctx.Duration(TxPoolLifetimeFlag.Name)
 	}
-	if ctx.IsSet(MinerEffectiveGasLimitFlag.Name) {
-		// While technically this is a miner config parameter, we also want the txpool to enforce
-		// it to avoid accepting transactions that can never be included in a block.
-		cfg.EffectiveGasCeil = ctx.Uint64(MinerEffectiveGasLimitFlag.Name)
-	}
+	//TODO: gtr
+	//if ctx.IsSet(MinerEffectiveGasLimitFlag.Name) {
+	//	// While technically this is a miner config parameter, we also want the txpool to enforce
+	//	// it to avoid accepting transactions that can never be included in a block.
+	//	cfg.EffectiveGasCeil = ctx.Uint64(MinerEffectiveGasLimitFlag.Name)
+	//}
 }
 
 func setMiner(ctx *cli.Context, cfg *miner.Config) {
@@ -2300,8 +2301,8 @@ func MakeConsolePreloads(ctx *cli.Context) []string {
 }
 
 // MakeTrieDatabase constructs a trie database based on the configured scheme.
-func MakeTrieDatabase(ctx *cli.Context, disk ethdb.Database, preimage bool, readOnly bool, isVerkle bool) *triedb.Database {
-	config := &triedb.Config{
+func MakeTrieDatabase(ctx *cli.Context, disk ethdb.Database, preimage bool, readOnly bool, isVerkle bool) *trie.Database {
+	config := &trie.Config{
 		Preimages: preimage,
 		IsVerkle:  isVerkle,
 	}
@@ -2314,12 +2315,12 @@ func MakeTrieDatabase(ctx *cli.Context, disk ethdb.Database, preimage bool, read
 		// ignore the parameter silently. TODO(rjl493456442)
 		// please config it if read mode is implemented.
 		config.HashDB = hashdb.Defaults
-		return triedb.NewDatabase(disk, config)
+		return trie.NewDatabase(disk, config)
 	}
 	if readOnly {
 		config.PathDB = pathdb.ReadOnly
 	} else {
 		config.PathDB = pathdb.Defaults
 	}
-	return triedb.NewDatabase(disk, config)
+	return trie.NewDatabase(disk, config)
 }

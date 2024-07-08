@@ -17,6 +17,7 @@
 package pathdb
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,48 +40,11 @@ type nodebuffer struct {
 	nodes  map[common.Hash]map[string]*trienode.Node // The dirty node set, mapped by owner and path
 }
 
-// newNodeBuffer initializes the node buffer with the provided nodes.
-func newNodeBuffer(limit int, nodes map[common.Hash]map[string]*trienode.Node, layers uint64) *nodebuffer {
-	if nodes == nil {
-		nodes = make(map[common.Hash]map[string]*trienode.Node)
-	}
-	var size uint64
-	for _, subset := range nodes {
-		for path, n := range subset {
-			size += uint64(len(n.Blob) + len(path))
-		}
-	}
-	return &nodebuffer{
-		layers: layers,
-		nodes:  nodes,
-		size:   size,
-		limit:  uint64(limit),
-	}
-}
-
-// node retrieves the trie node with given node info.
-func (b *nodebuffer) node(owner common.Hash, path []byte, hash common.Hash) (*trienode.Node, error) {
-	subset, ok := b.nodes[owner]
-	if !ok {
-		return nil, nil
-	}
-	n, ok := subset[string(path)]
-	if !ok {
-		return nil, nil
-	}
-	if n.Hash != hash {
-		dirtyFalseMeter.Mark(1)
-		log.Error("Unexpected trie node in node buffer", "owner", owner, "path", path, "expect", hash, "got", n.Hash)
-		return nil, newUnexpectedNodeError("dirty", hash, n.Hash, owner, path, n.Blob)
-	}
-	return n, nil
-}
-
 // commit merges the dirty nodes into the nodebuffer. This operation won't take
 // the ownership of the nodes map which belongs to the bottom-most diff layer.
 // It will just hold the node references from the given map which are safe to
 // copy.
-func (b *nodebuffer) commit(nodes map[common.Hash]map[string]*trienode.Node) *nodebuffer {
+func (b *nodebuffer) commit(root common.Hash, id uint64, block uint64, nodes map[common.Hash]map[string]*trienode.Node) trienodebuffer {
 	var (
 		delta         int64
 		overwrite     int64
@@ -120,6 +84,118 @@ func (b *nodebuffer) commit(nodes map[common.Hash]map[string]*trienode.Node) *no
 	gcBytesMeter.Mark(overwriteSize)
 	return b
 }
+
+// getSize return the nodebuffer used size.
+func (b *nodebuffer) getSize() (uint64, uint64) {
+	return b.size, 0
+}
+
+// getAllNodes return all the trie nodes are cached in nodebuffer.
+func (b *nodebuffer) getAllNodes() map[common.Hash]map[string]*trienode.Node {
+	return b.nodes
+}
+
+// getLayers return the size of cached difflayers.
+func (b *nodebuffer) getLayers() uint64 {
+	return b.layers
+}
+
+// waitAndStopFlushing will block unit writing the trie nodes of trienodebuffer to disk.
+func (b *nodebuffer) waitAndStopFlushing() {}
+
+// setClean set fastcache to trienodebuffer for cache the trie nodes,
+// used for nodebufferlist.
+func (b *nodebuffer) setClean(clean *fastcache.Cache) {
+	return
+}
+
+// proposedBlockReader return the world state Reader of block that is proposed to L1.
+func (b *nodebuffer) proposedBlockReader(blockRoot common.Hash) (layer, error) {
+	return nil, errors.New("anode buffer not support to get proposed block reader")
+}
+
+// newNodeBuffer initializes the node buffer with the provided nodes.
+func newNodeBuffer(limit int, nodes map[common.Hash]map[string]*trienode.Node, layers uint64) *nodebuffer {
+	if nodes == nil {
+		nodes = make(map[common.Hash]map[string]*trienode.Node)
+	}
+	var size uint64
+	for _, subset := range nodes {
+		for path, n := range subset {
+			size += uint64(len(n.Blob) + len(path))
+		}
+	}
+	return &nodebuffer{
+		layers: layers,
+		nodes:  nodes,
+		size:   size,
+		limit:  uint64(limit),
+	}
+}
+
+// node retrieves the trie node with given node info.
+func (b *nodebuffer) node(owner common.Hash, path []byte, hash common.Hash) (*trienode.Node, error) {
+	subset, ok := b.nodes[owner]
+	if !ok {
+		return nil, nil
+	}
+	n, ok := subset[string(path)]
+	if !ok {
+		return nil, nil
+	}
+	if n.Hash != hash {
+		dirtyFalseMeter.Mark(1)
+		log.Error("Unexpected trie node in node buffer", "owner", owner, "path", path, "expect", hash, "got", n.Hash)
+		return nil, newUnexpectedNodeError("dirty", hash, n.Hash, owner, path, n.Blob)
+	}
+	return n, nil
+}
+
+//
+//// commit merges the dirty nodes into the nodebuffer. This operation won't take
+//// the ownership of the nodes map which belongs to the bottom-most diff layer.
+//// It will just hold the node references from the given map which are safe to
+//// copy.
+//func (b *nodebuffer) commit(nodes map[common.Hash]map[string]*trienode.Node) *nodebuffer {
+//	var (
+//		delta         int64
+//		overwrite     int64
+//		overwriteSize int64
+//	)
+//	for owner, subset := range nodes {
+//		current, exist := b.nodes[owner]
+//		if !exist {
+//			// Allocate a new map for the subset instead of claiming it directly
+//			// from the passed map to avoid potential concurrent map read/write.
+//			// The nodes belong to original diff layer are still accessible even
+//			// after merging, thus the ownership of nodes map should still belong
+//			// to original layer and any mutation on it should be prevented.
+//			current = make(map[string]*trienode.Node)
+//			for path, n := range subset {
+//				current[path] = n
+//				delta += int64(len(n.Blob) + len(path))
+//			}
+//			b.nodes[owner] = current
+//			continue
+//		}
+//		for path, n := range subset {
+//			if orig, exist := current[path]; !exist {
+//				delta += int64(len(n.Blob) + len(path))
+//			} else {
+//				delta += int64(len(n.Blob) - len(orig.Blob))
+//				overwrite++
+//				overwriteSize += int64(len(orig.Blob) + len(path))
+//			}
+//			current[path] = n
+//		}
+//		b.nodes[owner] = current
+//	}
+//	b.updateSize(delta)
+//	b.layers++
+//	gcNodesMeter.Mark(overwrite)
+//	gcBytesMeter.Mark(overwriteSize)
+//	return b
+//}
 
 // revert is the reverse operation of commit. It also merges the provided nodes
 // into the nodebuffer, the difference is that the provided node set should
