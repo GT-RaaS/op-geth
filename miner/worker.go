@@ -161,6 +161,7 @@ type newPayloadResult struct {
 	block    *types.Block
 	fees     *big.Int               // total block fees
 	sidecars []*types.BlobTxSidecar // collected blobs of blob transactions
+	env      *environment
 }
 
 // getWorkReq represents a request for getting a new sealing work with provided parameters.
@@ -1219,6 +1220,7 @@ func (w *worker) generateWork(genParams *generateParams) *newPayloadResult {
 		block:    block,
 		fees:     totalFees(block, work.receipts),
 		sidecars: work.sidecars,
+		env:      work,
 	}
 }
 
